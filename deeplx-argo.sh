@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Argos-style cloudflared launcher for DeepLX-Mini (port 7860 by default).
+# Argos-style cloudflared launcher for local services (port 7860 by default).
 # Priority is:
-# 1) fixed tunnel via token (ARGO_AUTH/agk + ARGO_DOMAIN/agn),
+# 1) fixed tunnel via token (ARGO_AUTH/agk),
 # 2) quick tunnel via --url.
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -112,7 +112,7 @@ start_tunnel() {
   download_cloudflared
   mkdir -p "$STATE_DIR"
 
-  if [ -n "$ARGO_DOMAIN" ] && [ -n "$ARGO_AUTH" ]; then
+  if [ -n "$ARGO_AUTH" ]; then
     info "Starting fixed tunnel (token mode)..."
     nohup "$BIN_PATH" tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token "$ARGO_AUTH" >"$LOG_FILE" 2>&1 &
     printf 'fixed\n%s\n' "$ARGO_DOMAIN" > "$MODE_FILE"
@@ -178,48 +178,55 @@ show_logs() {
 usage() {
   script_name="$(basename "$0")"
   cat <<EOF
-Usage:
+用法:
   bash ${script_name} start
   bash ${script_name} stop
   bash ${script_name} restart
   bash ${script_name} status
   bash ${script_name} logs
 
-Environment variables:
-  TUNNEL_NAME (preferred) / INSTANCE
-    - multi-instance id, only [A-Za-z0-9._-] kept, others mapped to "_"
-    - default: default
-    - TUNNEL_NAME has higher priority than INSTANCE
-  LOCAL_HOST (default: 127.0.0.1)
-  LOCAL_PORT (default: 7860)
+环境变量:
+  TUNNEL_NAME (推荐) / INSTANCE
+    - 多实例名称，只保留 [A-Za-z0-9._-]，其他字符会转成 "_"
+    - 默认: default
+    - TUNNEL_NAME 优先级高于 INSTANCE
+  LOCAL_HOST (默认: 127.0.0.1)
+  LOCAL_PORT (默认: 7860)
 
-Fixed tunnel mode (same style as argosbx):
-  ARGO_DOMAIN / agn   e.g. api.example.com
-  ARGO_AUTH   / agk   tunnel token
+固定隧道模式（与 argosbx 变量风格兼容）:
+  ARGO_AUTH   / agk   Tunnel Token（必填）
+  ARGO_DOMAIN / agn   例如: api.example.com（可选，仅用于 status 显示）
 
-When ARGO_DOMAIN + ARGO_AUTH are both set, script uses:
+当 ARGO_AUTH 存在时，脚本使用:
   cloudflared tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token ...
-Otherwise it uses quick tunnel:
+当 ARGO_AUTH 缺失时，使用临时隧道:
   cloudflared tunnel --url http://LOCAL_HOST:LOCAL_PORT --edge-ip-version auto --no-autoupdate --protocol http2
 
-Examples:
-  # quick tunnel to local 7860
+示例:
+  # 临时隧道到本地 7860
   LOCAL_PORT=7860 bash ${script_name} start
 
-  # quick tunnel on a named instance
+  # 使用命名实例运行临时隧道
   TUNNEL_NAME=deeplx LOCAL_PORT=7860 bash ${script_name} start
 
-  # fixed tunnel (argosbx-compatible vars)
-  agn='api.example.com' agk='YOUR_TUNNEL_TOKEN' LOCAL_PORT=7860 bash ${script_name} start
+  # 固定隧道（仅 token，LOCAL_PORT 非必填）
+  agk='YOUR_TUNNEL_TOKEN' bash ${script_name} start
 
-  # run multiple fixed tunnels in parallel (different instances)
+  # 固定隧道（带域名，仅用于 status 展示）
+  agn='api.example.com' agk='YOUR_TUNNEL_TOKEN' bash ${script_name} start
+
+  # 多实例并行固定隧道（不同实例名）
   TUNNEL_NAME=translate agn='translate.example.com' agk='TOKEN_A' LOCAL_PORT=7860 bash ${script_name} start
   TUNNEL_NAME=jupyter   agn='jupyter.example.com'   agk='TOKEN_B' LOCAL_PORT=1188 bash ${script_name} start
 
-  # instance-specific status/logs/stop
+  # 针对实例查看状态/日志/停止
   TUNNEL_NAME=translate bash ${script_name} status
   TUNNEL_NAME=translate bash ${script_name} logs
   TUNNEL_NAME=translate bash ${script_name} stop
+
+补充（同一个 token）:
+  - 同一个 agk/ARGO_AUTH 连接的是同一个 Cloudflare Tunnel。
+  - 该 Tunnel 下在 Cloudflare 里配置的其他映射规则，也可以被当前连接器承接。
 EOF
 }
 
