@@ -17,6 +17,7 @@ if [ "$1" = "rep" ]; then
 [ "$vwp" = yes ] || [ "$sop" = yes ] || [ "$vxp" = yes ] || [ "$ssp" = yes ] || [ "$vlp" = yes ] || [ "$vmp" = yes ] || [ "$hyp" = yes ] || [ "$tup" = yes ] || [ "$xhp" = yes ] || [ "$anp" = yes ] || [ "$arp" = yes ] || { echo "提示：rep重置协议时，请在脚本前至少设置一个协议变量哦，再见！💣"; exit; }
 fi
 else
+[ "$1" = "wopt" ] || [ "$1" = "wopt-run" ] || [ "$1" = "wopt-on" ] || [ "$1" = "wopt-off" ] ||
 [ "$1" = "del" ] || [ "$vwp" = yes ] || [ "$sop" = yes ] || [ "$vxp" = yes ] || [ "$ssp" = yes ] || [ "$vlp" = yes ] || [ "$vmp" = yes ] || [ "$hyp" = yes ] || [ "$tup" = yes ] || [ "$xhp" = yes ] || [ "$anp" = yes ] || [ "$arp" = yes ] || { echo "提示：未安装argosbx脚本，请在脚本前至少设置一个协议变量哦，再见！💣"; exit; }
 fi
 export uuid=${uuid:-''}
@@ -56,6 +57,7 @@ export exit_warp_domain_suffix=${xwd:-${exit_warp_domain_suffix:-''}}
 export exit_warp_rule_set=${xws:-${exit_warp_rule_set:-''}}
 v46url="https://icanhazip.com"
 agsbxurl="https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh"
+warp_endpoint_port=2408
 showmode(){
 echo "Argosbx脚本一键SSH命令生器在线网址：https://yonggekkk.github.io/argosbx/"
 echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh) 或 bash <(wget -qO- https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)"
@@ -1940,7 +1942,7 @@ cat >> "$HOME/agsbx/xr.json" <<EOF
               "0.0.0.0/0",
               "::/0"
             ],
-            "endpoint": "${xendip}:2408"
+            "endpoint": "${xendip}:${warp_endpoint_port}"
           }
         ],
         "reserved": ${res}
@@ -2238,7 +2240,7 @@ cat >> "$HOME/agsbx/sb.json" <<EOF
       "peers": [
         {
           "address": "${sendip}",
-          "port": 2408,
+          "port": ${warp_endpoint_port},
           "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
           "allowed_ips": [
             "0.0.0.0/0",
@@ -2520,6 +2522,7 @@ fi
 fi
 crontab /tmp/crontab.tmp >/dev/null 2>&1
 rm /tmp/crontab.tmp
+sync_warp_opt_cron
 echo "Argosbx脚本进程启动成功，安装完毕" && sleep 2
 else
 echo "Argosbx脚本进程未启动，安装失败" && exit
@@ -2866,6 +2869,7 @@ crontab -l > /tmp/crontab.tmp 2>/dev/null
 sed -i '/agsbx\/sing-box/d' /tmp/crontab.tmp
 sed -i '/agsbx\/xray/d' /tmp/crontab.tmp
 sed -i '/agsbx\/cloudflared/d' /tmp/crontab.tmp
+sed -i '/agsbx wopt-run/d' /tmp/crontab.tmp
 crontab /tmp/crontab.tmp >/dev/null 2>&1
 rm /tmp/crontab.tmp
 rm -rf  "$HOME/bin/agsbx"
@@ -2904,6 +2908,243 @@ else
 nohup $HOME/agsbx/sing-box run -c $HOME/agsbx/sb.json >/dev/null 2>&1 &
 fi
 }
+
+normalize_warp_opt_hours(){
+warp_opt_hours_input="$1"
+case "$warp_opt_hours_input" in
+''|*[!0-9]*) warp_opt_hours_input=6 ;;
+esac
+[ "$warp_opt_hours_input" -lt 1 ] && warp_opt_hours_input=1
+[ "$warp_opt_hours_input" -gt 720 ] && warp_opt_hours_input=720
+echo "$warp_opt_hours_input"
+}
+
+build_warp_opt_cron_expr(){
+warp_opt_hours_expr="$1"
+if [ "$warp_opt_hours_expr" -le 24 ]; then
+echo "0 */$warp_opt_hours_expr * * *"
+return
+fi
+if [ $((warp_opt_hours_expr % 24)) -eq 0 ]; then
+warp_opt_days_expr=$((warp_opt_hours_expr / 24))
+if [ "$warp_opt_days_expr" -ge 1 ] && [ "$warp_opt_days_expr" -le 31 ]; then
+echo "0 3 */$warp_opt_days_expr * *"
+return
+fi
+fi
+echo "0 */24 * * *"
+}
+
+sync_warp_opt_cron(){
+crontab -l > /tmp/crontab.tmp 2>/dev/null
+sed -i '/agsbx wopt-run/d' /tmp/crontab.tmp
+if [ -f "$HOME/agsbx/warp_opt_enabled" ]; then
+warp_opt_hours_saved=$(cat "$HOME/agsbx/warp_opt_hours" 2>/dev/null)
+warp_opt_hours_saved=$(normalize_warp_opt_hours "$warp_opt_hours_saved")
+echo "$warp_opt_hours_saved" > "$HOME/agsbx/warp_opt_hours"
+warp_opt_cron_expr=$(build_warp_opt_cron_expr "$warp_opt_hours_saved")
+echo "$warp_opt_cron_expr /bin/sh -c \"$HOME/bin/agsbx wopt-run >> $HOME/agsbx/warp-opt.log 2>&1\"" >> /tmp/crontab.tmp
+fi
+crontab /tmp/crontab.tmp >/dev/null 2>&1
+rm -f /tmp/crontab.tmp
+}
+
+load_saved_warp_endpoint(){
+warp_endpoint_port=2408
+[ -s "$HOME/agsbx/warp_endpoint.log" ] || return
+saved_endpoint=$(head -n1 "$HOME/agsbx/warp_endpoint.log" 2>/dev/null | tr -d '\r\n ')
+[ -n "$saved_endpoint" ] || return
+case "$saved_endpoint" in
+\[*\]:*)
+saved_ip=$(echo "$saved_endpoint" | sed -n 's/^\[\(.*\)\]:[0-9][0-9]*$/\1/p')
+saved_port=$(echo "$saved_endpoint" | sed -n 's/^\[.*\]:\([0-9][0-9]*\)$/\1/p')
+;;
+*:* )
+saved_ip=${saved_endpoint%:*}
+saved_port=${saved_endpoint##*:}
+;;
+* ) return ;;
+esac
+case "$saved_port" in
+''|*[!0-9]*) return ;;
+esac
+if [ "$saved_port" -lt 1 ] || [ "$saved_port" -gt 65535 ]; then
+return
+fi
+sendip="$saved_ip"
+if echo "$saved_ip" | grep -q ':'; then
+xendip="[$saved_ip]"
+else
+xendip="$saved_ip"
+fi
+warp_endpoint_port="$saved_port"
+}
+
+ensure_warp_speedtest_binary(){
+warp_st_target="$HOME/agsbx/CloudflareWarpSpeedTest"
+[ -x "$warp_st_target" ] && return 0
+case "$cpu" in
+amd64|arm64) warp_st_arch="$cpu" ;;
+*) return 1 ;;
+esac
+release_api="https://api.github.com/repos/peanut996/CloudflareWarpSpeedTest/releases/latest"
+release_json=$( (command -v curl >/dev/null 2>&1 && curl -fsSL --retry 2 --connect-timeout 8 "$release_api" 2>/dev/null) || (command -v wget >/dev/null 2>&1 && wget -qO- "$release_api" 2>/dev/null) )
+[ -n "$release_json" ] || return 1
+asset_url=$(printf '%s\n' "$release_json" | tr ',' '\n' | sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p' | grep -E "CloudflareWarpSpeedTest-.*-linux-${warp_st_arch}\\.tar\\.gz$" | head -n1)
+[ -n "$asset_url" ] || return 1
+mkdir -p "$HOME/agsbx"
+warp_st_pkg="$HOME/agsbx/.warp_speedtest_${warp_st_arch}.tar.gz"
+warp_st_dir="$HOME/agsbx/.warp_speedtest_${warp_st_arch}_$$"
+rm -f "$warp_st_pkg"
+rm -rf "$warp_st_dir"
+if ! ( (command -v curl >/dev/null 2>&1 && curl -fL --retry 2 --connect-timeout 8 -o "$warp_st_pkg" "$asset_url" 2>/dev/null) || (command -v wget >/dev/null 2>&1 && wget -qO "$warp_st_pkg" "$asset_url" 2>/dev/null) ); then
+rm -f "$warp_st_pkg"
+return 1
+fi
+mkdir -p "$warp_st_dir"
+if ! tar -xzf "$warp_st_pkg" -C "$warp_st_dir" >/dev/null 2>&1; then
+rm -f "$warp_st_pkg"
+rm -rf "$warp_st_dir"
+return 1
+fi
+warp_st_bin=$(find "$warp_st_dir" -type f \( -name 'CloudflareWarpSpeedTest' -o -name 'cloudflarewarpspeedtest' \) | head -n1)
+if [ -z "$warp_st_bin" ]; then
+rm -f "$warp_st_pkg"
+rm -rf "$warp_st_dir"
+return 1
+fi
+cp "$warp_st_bin" "$warp_st_target" >/dev/null 2>&1 || {
+rm -f "$warp_st_pkg"
+rm -rf "$warp_st_dir"
+return 1
+}
+chmod +x "$warp_st_target"
+ln -sf "$warp_st_target" "$HOME/agsbx/cloudflarewarpspeedtest" >/dev/null 2>&1
+rm -f "$warp_st_pkg"
+rm -rf "$warp_st_dir"
+[ -x "$warp_st_target" ]
+}
+
+detect_warp_speedtest_cmd(){
+if command -v CloudflareWarpSpeedTest >/dev/null 2>&1; then
+command -v CloudflareWarpSpeedTest
+return 0
+fi
+if [ -x "$HOME/agsbx/CloudflareWarpSpeedTest" ]; then
+echo "$HOME/agsbx/CloudflareWarpSpeedTest"
+return 0
+fi
+if [ -x "$HOME/agsbx/cloudflarewarpspeedtest" ]; then
+echo "$HOME/agsbx/cloudflarewarpspeedtest"
+return 0
+fi
+if ensure_warp_speedtest_binary; then
+echo "$HOME/agsbx/CloudflareWarpSpeedTest"
+return 0
+fi
+return 1
+}
+
+apply_warp_endpoint_to_xray(){
+xray_cfg="$HOME/agsbx/xr.json"
+xray_ip="$1"
+xray_port="$2"
+[ -f "$xray_cfg" ] || return 0
+if echo "$xray_ip" | grep -q ':'; then
+xray_ip_fmt="[$xray_ip]"
+else
+xray_ip_fmt="$xray_ip"
+fi
+sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"x-warp-out\"/,/^[[:space:]]*\\}[[:space:]]*,?[[:space:]]*$/ s#(\"endpoint\"[[:space:]]*:[[:space:]]*\")[^\"]+(\"[[:space:]]*,?)#\\1${xray_ip_fmt}:${xray_port}\\2#" "$xray_cfg"
+}
+
+apply_warp_endpoint_to_singbox(){
+sb_cfg="$HOME/agsbx/sb.json"
+sb_ip="$1"
+sb_port="$2"
+[ -f "$sb_cfg" ] || return 0
+sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"warp-out\"/,/^[[:space:]]*\\}[[:space:]]*,?[[:space:]]*$/ s#(\"address\"[[:space:]]*:[[:space:]]*\")[^\"]+(\"[[:space:]]*,?)#\\1${sb_ip}\\2#" "$sb_cfg"
+sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"warp-out\"/,/^[[:space:]]*\\}[[:space:]]*,?[[:space:]]*$/ s#(\"port\"[[:space:]]*:[[:space:]]*)[0-9]+#\\1${sb_port}#" "$sb_cfg"
+sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"wireguard-out\"/,/^[[:space:]]*\\}[[:space:]]*,?[[:space:]]*$/ s#(\"server\"[[:space:]]*:[[:space:]]*\")[^\"]+(\"[[:space:]]*,?)#\\1${sb_ip}\\2#" "$sb_cfg"
+sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"wireguard-out\"/,/^[[:space:]]*\\}[[:space:]]*,?[[:space:]]*$/ s#(\"server_port\"[[:space:]]*:[[:space:]]*)[0-9]+#\\1${sb_port}#" "$sb_cfg"
+}
+
+optimize_warp_endpoint(){
+tester_cmd=$(detect_warp_speedtest_cmd)
+if [ -z "$tester_cmd" ]; then
+echo "CloudflareWarpSpeedTest not found. Please install it first."
+return 1
+fi
+scan_count=${wopc:-800}
+ping_times=${woptp:-4}
+case "$scan_count" in ''|*[!0-9]*) scan_count=800 ;; esac
+case "$ping_times" in ''|*[!0-9]*) ping_times=4 ;; esac
+[ "$scan_count" -lt 100 ] && scan_count=100
+[ "$scan_count" -gt 20000 ] && scan_count=20000
+[ "$ping_times" -lt 1 ] && ping_times=1
+[ "$ping_times" -gt 20 ] && ping_times=20
+csv_file="$HOME/agsbx/warp_opt_result.csv"
+"$tester_cmd" -all -c "$scan_count" -t "$ping_times" -p 0 -o "$csv_file" >/dev/null 2>&1
+if [ ! -s "$csv_file" ]; then
+echo "Warp optimize failed: speed test did not produce result file."
+return 1
+fi
+best_endpoint=$(awk -F',' 'NR>1 {gsub(/"/, "", $1); if ($1 != "") {print $1; exit}}' "$csv_file")
+if [ -z "$best_endpoint" ]; then
+echo "Warp optimize failed: no endpoint found in result."
+return 1
+fi
+if echo "$best_endpoint" | grep -q '^\[.*\]:[0-9][0-9]*$'; then
+best_ip=$(echo "$best_endpoint" | sed -n 's/^\[\(.*\)\]:[0-9][0-9]*$/\1/p')
+best_port=$(echo "$best_endpoint" | sed -n 's/^\[.*\]:\([0-9][0-9]*\)$/\1/p')
+else
+best_ip=${best_endpoint%:*}
+best_port=${best_endpoint##*:}
+fi
+case "$best_port" in
+''|*[!0-9]*)
+echo "Warp optimize failed: invalid endpoint -> $best_endpoint"
+return 1
+;;
+esac
+apply_warp_endpoint_to_xray "$best_ip" "$best_port"
+apply_warp_endpoint_to_singbox "$best_ip" "$best_port"
+echo "${best_ip}:${best_port}" > "$HOME/agsbx/warp_endpoint.log"
+echo "$best_port" > "$HOME/agsbx/warp_endpoint_port"
+if find /proc/*/exe -type l 2>/dev/null | grep -E '/proc/[0-9]+/exe' | xargs -r readlink 2>/dev/null | grep -q 'agsbx/s' || pgrep -f 'agsbx/s' >/dev/null 2>&1 ; then
+sbrestart
+fi
+if find /proc/*/exe -type l 2>/dev/null | grep -E '/proc/[0-9]+/exe' | xargs -r readlink 2>/dev/null | grep -q 'agsbx/x' || pgrep -f 'agsbx/x' >/dev/null 2>&1 ; then
+xrestart
+fi
+echo "WARP endpoint updated: ${best_ip}:${best_port}"
+return 0
+}
+
+enable_warp_opt_schedule(){
+warp_opt_hours_set=$(normalize_warp_opt_hours "${wopth:-${warp_opt_hours:-6}}")
+echo "$warp_opt_hours_set" > "$HOME/agsbx/warp_opt_hours"
+touch "$HOME/agsbx/warp_opt_enabled"
+sync_warp_opt_cron
+echo "WARP auto-optimize enabled: every ${warp_opt_hours_set} hour(s)."
+}
+
+disable_warp_opt_schedule(){
+rm -f "$HOME/agsbx/warp_opt_enabled"
+sync_warp_opt_cron
+echo "WARP auto-optimize disabled."
+}
+
+if [ "$1" = "wopt" ] || [ "$1" = "wopt-run" ]; then
+optimize_warp_endpoint
+exit
+elif [ "$1" = "wopt-on" ]; then
+enable_warp_opt_schedule
+exit
+elif [ "$1" = "wopt-off" ]; then
+disable_warp_opt_schedule
+exit
+fi
 
 if [ "$1" = "del" ]; then
 cleandel
@@ -2984,6 +3225,7 @@ else
 sendip="162.159.192.1"
 xendip="162.159.192.1"
 fi
+load_saved_warp_endpoint
 echo "VPS系统：$op"
 echo "CPU架构：$cpu"
 echo "Argosbx脚本未安装，开始安装…………" && sleep 1
