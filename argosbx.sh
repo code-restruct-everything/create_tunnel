@@ -3166,9 +3166,13 @@ if [ ! -s "$csv_file" ]; then
 echo "Warp optimize failed: speed test did not produce result file."
 return 1
 fi
-best_endpoint=$(awk -F',' 'NR>1 {gsub(/"/, "", $1); if ($1 != "") {print $1; exit}}' "$csv_file")
+target_port=${woptport:-2408}
+case "$target_port" in ''|*[!0-9]*) target_port=2408 ;; esac
+[ "$target_port" -lt 1 ] && target_port=2408
+[ "$target_port" -gt 65535 ] && target_port=2408
+best_endpoint=$(awk -F',' -v p="$target_port" 'NR>1 {gsub(/"/, "", $1); if ($1 != "" && $1 ~ ":" p "$") {print $1; exit}}' "$csv_file")
 if [ -z "$best_endpoint" ]; then
-echo "Warp optimize failed: no endpoint found in result."
+echo "Warp optimize failed: no endpoint found for port $target_port."
 return 1
 fi
 if echo "$best_endpoint" | grep -q '^\[.*\]:[0-9][0-9]*$'; then
