@@ -2949,35 +2949,44 @@ crontab /tmp/crontab.tmp >/dev/null 2>&1
 rm -f /tmp/crontab.tmp
 }
 
+parse_endpoint_string(){
+endpoint_raw=$(printf '%s' "$1" | tr -d '\r\n ')
+endpoint_ip=""
+endpoint_port=""
+[ -n "$endpoint_raw" ] || return 1
+case "$endpoint_raw" in
+\[*\]:*)
+endpoint_ip=$(echo "$endpoint_raw" | sed -n 's/^\[\(.*\)\]:[0-9][0-9]*$/\1/p')
+endpoint_port=$(echo "$endpoint_raw" | sed -n 's/^\[.*\]:\([0-9][0-9]*\)$/\1/p')
+;;
+*:* )
+endpoint_ip=${endpoint_raw%:*}
+endpoint_port=${endpoint_raw##*:}
+;;
+* ) return 1 ;;
+esac
+case "$endpoint_port" in
+''|*[!0-9]*) return 1 ;;
+esac
+if [ "$endpoint_port" -lt 1 ] || [ "$endpoint_port" -gt 65535 ]; then
+return 1
+fi
+[ -n "$endpoint_ip" ] || return 1
+return 0
+}
+
 load_saved_warp_endpoint(){
 warp_endpoint_port=2408
 [ -s "$HOME/agsbx/warp_endpoint.log" ] || return
-saved_endpoint=$(head -n1 "$HOME/agsbx/warp_endpoint.log" 2>/dev/null | tr -d '\r\n ')
-[ -n "$saved_endpoint" ] || return
-case "$saved_endpoint" in
-\[*\]:*)
-saved_ip=$(echo "$saved_endpoint" | sed -n 's/^\[\(.*\)\]:[0-9][0-9]*$/\1/p')
-saved_port=$(echo "$saved_endpoint" | sed -n 's/^\[.*\]:\([0-9][0-9]*\)$/\1/p')
-;;
-*:* )
-saved_ip=${saved_endpoint%:*}
-saved_port=${saved_endpoint##*:}
-;;
-* ) return ;;
-esac
-case "$saved_port" in
-''|*[!0-9]*) return ;;
-esac
-if [ "$saved_port" -lt 1 ] || [ "$saved_port" -gt 65535 ]; then
-return
-fi
-sendip="$saved_ip"
-if echo "$saved_ip" | grep -q ':'; then
-xendip="[$saved_ip]"
+saved_endpoint=$(head -n1 "$HOME/agsbx/warp_endpoint.log" 2>/dev/null)
+parse_endpoint_string "$saved_endpoint" || return
+sendip="$endpoint_ip"
+if echo "$endpoint_ip" | grep -q ':'; then
+xendip="[$endpoint_ip]"
 else
-xendip="$saved_ip"
+xendip="$endpoint_ip"
 fi
-warp_endpoint_port="$saved_port"
+warp_endpoint_port="$endpoint_port"
 }
 
 ensure_warp_speedtest_binary(){
@@ -3069,12 +3078,80 @@ sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"wireguard-out\"/,/^[[:space:]]*\\}
 sed -i -E "/\"tag\"[[:space:]]*:[[:space:]]*\"wireguard-out\"/,/^[[:space:]]*\\}[[:space:]]*,?[[:space:]]*$/ s#(\"server_port\"[[:space:]]*:[[:space:]]*)[0-9]+#\\1${sb_port}#" "$sb_cfg"
 }
 
+restart_warp_engines(){
+if find /proc/*/exe -type l 2>/dev/null | grep -E '/proc/[0-9]+/exe' | xargs -r readlink 2>/dev/null | grep -q 'agsbx/s' || pgrep -f 'agsbx/s' >/dev/null 2>&1 ; then
+sbrestart
+fi
+if find /proc/*/exe -type l 2>/dev/null | grep -E '/proc/[0-9]+/exe' | xargs -r readlink 2>/dev/null | grep -q 'agsbx/x' || pgrep -f 'agsbx/x' >/dev/null 2>&1 ; then
+xrestart
+fi
+}
+
+get_current_warp_endpoint(){
+if [ -s "$HOME/agsbx/warp_endpoint.log" ]; then
+current_saved=$(head -n1 "$HOME/agsbx/warp_endpoint.log" 2>/dev/null)
+if parse_endpoint_string "$current_saved"; then
+echo "${endpoint_ip}:${endpoint_port}"
+return 0
+fi
+fi
+if [ -f "$HOME/agsbx/sb.json" ]; then
+sb_remote_ip=$(sed -n '/"tag"[[:space:]]*:[[:space:]]*"warp-out"/,/}/ s/.*"address"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HOME/agsbx/sb.json" | head -n1)
+sb_remote_port=$(sed -n '/"tag"[[:space:]]*:[[:space:]]*"warp-out"/,/}/ s/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$HOME/agsbx/sb.json" | head -n1)
+if [ -n "$sb_remote_ip" ] && [ -n "$sb_remote_port" ]; then
+if parse_endpoint_string "${sb_remote_ip}:${sb_remote_port}"; then
+echo "${endpoint_ip}:${endpoint_port}"
+return 0
+fi
+fi
+fi
+if [ -f "$HOME/agsbx/xr.json" ]; then
+xr_remote_endpoint=$(sed -n '/"tag"[[:space:]]*:[[:space:]]*"x-warp-out"/,/}/ s/.*"endpoint"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HOME/agsbx/xr.json" | head -n1)
+if parse_endpoint_string "$xr_remote_endpoint"; then
+echo "${endpoint_ip}:${endpoint_port}"
+return 0
+fi
+fi
+return 1
+}
+
+validate_warp_endpoint(){
+check_ip="$1"
+check_port="$2"
+check_tester="$3"
+check_times=${woptv:-2}
+case "$check_times" in ''|*[!0-9]*) check_times=2 ;; esac
+[ "$check_times" -lt 1 ] && check_times=1
+[ "$check_times" -gt 10 ] && check_times=10
+verify_csv="$HOME/agsbx/warp_opt_verify.csv"
+"$check_tester" -all -ip "$check_ip" -t "$check_times" -p 0 -o "$verify_csv" >/dev/null 2>&1 || return 1
+if echo "$check_ip" | grep -q ':'; then
+verify_target="[$check_ip]:$check_port"
+else
+verify_target="$check_ip:$check_port"
+fi
+awk -F',' -v target="$verify_target" 'NR>1 {gsub(/"/, "", $1); if ($1 == target) {found=1; exit}} END {exit(found?0:1)}' "$verify_csv"
+}
+
+rollback_warp_endpoint(){
+rollback_target="$1"
+parse_endpoint_string "$rollback_target" || return 1
+apply_warp_endpoint_to_xray "$endpoint_ip" "$endpoint_port"
+apply_warp_endpoint_to_singbox "$endpoint_ip" "$endpoint_port"
+echo "${endpoint_ip}:${endpoint_port}" > "$HOME/agsbx/warp_endpoint.log"
+echo "$endpoint_port" > "$HOME/agsbx/warp_endpoint_port"
+restart_warp_engines
+return 0
+}
+
 optimize_warp_endpoint(){
 tester_cmd=$(detect_warp_speedtest_cmd)
 if [ -z "$tester_cmd" ]; then
 echo "CloudflareWarpSpeedTest not found. Please install it first."
 return 1
 fi
+old_endpoint=$(get_current_warp_endpoint 2>/dev/null)
+[ -n "$old_endpoint" ] || old_endpoint="162.159.192.1:2408"
 scan_count=${wopc:-800}
 ping_times=${woptp:-4}
 case "$scan_count" in ''|*[!0-9]*) scan_count=800 ;; esac
@@ -3111,11 +3188,15 @@ apply_warp_endpoint_to_xray "$best_ip" "$best_port"
 apply_warp_endpoint_to_singbox "$best_ip" "$best_port"
 echo "${best_ip}:${best_port}" > "$HOME/agsbx/warp_endpoint.log"
 echo "$best_port" > "$HOME/agsbx/warp_endpoint_port"
-if find /proc/*/exe -type l 2>/dev/null | grep -E '/proc/[0-9]+/exe' | xargs -r readlink 2>/dev/null | grep -q 'agsbx/s' || pgrep -f 'agsbx/s' >/dev/null 2>&1 ; then
-sbrestart
+restart_warp_engines
+if ! validate_warp_endpoint "$best_ip" "$best_port" "$tester_cmd"; then
+echo "WARP endpoint verify failed, rolling back: $old_endpoint"
+if rollback_warp_endpoint "$old_endpoint"; then
+echo "Rollback done: $old_endpoint"
+else
+echo "Rollback failed, please run rep or set endpoint manually."
 fi
-if find /proc/*/exe -type l 2>/dev/null | grep -E '/proc/[0-9]+/exe' | xargs -r readlink 2>/dev/null | grep -q 'agsbx/x' || pgrep -f 'agsbx/x' >/dev/null 2>&1 ; then
-xrestart
+return 1
 fi
 echo "WARP endpoint updated: ${best_ip}:${best_port}"
 return 0
