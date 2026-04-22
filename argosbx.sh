@@ -1258,6 +1258,46 @@ EOF
 fi
 }
 
+download_if_missing(){
+dl_target="$1"
+shift
+[ -s "$dl_target" ] && return 0
+dl_tmp="${dl_target}.tmp.$$"
+rm -f "$dl_tmp"
+for dl_url in "$@"; do
+[ -n "$dl_url" ] || continue
+if command -v curl >/dev/null 2>&1; then
+curl -fsL --connect-timeout 8 --max-time 40 -o "$dl_tmp" "$dl_url" >/dev/null 2>&1
+elif command -v wget >/dev/null 2>&1; then
+timeout 45 wget -qO "$dl_tmp" --tries=2 "$dl_url" >/dev/null 2>&1
+else
+return 1
+fi
+if [ -s "$dl_tmp" ]; then
+mv "$dl_tmp" "$dl_target"
+chmod 644 "$dl_target" 2>/dev/null
+return 0
+fi
+rm -f "$dl_tmp"
+done
+rm -f "$dl_tmp"
+return 1
+}
+
+ensure_xray_geo_data(){
+[ -s "$HOME/agsbx/xr.json" ] || return
+grep -q 'geosite:' "$HOME/agsbx/xr.json" 2>/dev/null || return
+download_if_missing "$HOME/agsbx/geosite.dat" \
+"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
+"https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat"
+download_if_missing "$HOME/agsbx/geoip.dat" \
+"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
+"https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat"
+if [ ! -s "$HOME/agsbx/geosite.dat" ]; then
+echo "Warning: geosite.dat is missing; geosite rules may fail"
+fi
+}
+
 parse_exit_url_to_outbound(){
 p_url="$1"
 p_tag="$2"
@@ -2135,6 +2175,7 @@ ${xr_extra_rules}
   }
 }
 EOF
+ensure_xray_geo_data
 if pidof systemd >/dev/null 2>&1 && [ "$EUID" -eq 0 ]; then
 cat > /etc/systemd/system/xr.service <<EOF
 [Unit]
@@ -2844,6 +2885,7 @@ fi
 }
 xrestart(){
 kill -15 $(pgrep -f 'agsbx/x' 2>/dev/null) >/dev/null 2>&1
+ensure_xray_geo_data
 if pidof systemd >/dev/null 2>&1; then
 systemctl restart xr >/dev/null 2>&1
 elif command -v rc-service >/dev/null 2>&1; then
