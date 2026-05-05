@@ -47,8 +47,12 @@ export oap=${oap:-''}
 export vmws_nodes=${vmws:-${vmws_nodes:-''}}
 export vmws_array=${vmwa:-${vmws_array:-''}}
 vmws_clear=no
-case "${vmws:-}" in off|OFF|none|NONE) vmws_clear=yes ;; esac
-case "${vmwa:-}" in off|OFF|none|NONE) vmws_clear=yes ;; esac
+case "${vmws:-}" in
+off|OFF|none|NONE) vmws_clear=yes ;;
+esac
+case "${vmwa:-}" in
+off|OFF|none|NONE) vmws_clear=yes ;;
+esac
 export warp_domain_suffix=${wfd:-${warp_domain_suffix:-''}}
 export direct_domain_suffix=${dfd:-${direct_domain_suffix:-''}}
 export warp_rule_set=${wfs:-${warp_rule_set:-''}}
@@ -301,7 +305,6 @@ xs4|s4x) s1outtag=warp-out; s2outtag=direct; x1outtag=warp-out; x2outtag=warp-ou
 xs6|s6x) s1outtag=warp-out; s2outtag=direct; x1outtag=warp-out; x2outtag=warp-out; xip='"::/0", "0.0.0.0/0"'; sip='"::/0"'; wap=warp ;;
 * ) s1outtag=direct; s2outtag=direct; x1outtag=direct; x2outtag=direct; xip='"::/0", "0.0.0.0/0"'; sip='"::/0", "0.0.0.0/0"'; wap=warpargo ;;
 esac
-fi
 fi
 v4_ok=false
 v6_ok=false
