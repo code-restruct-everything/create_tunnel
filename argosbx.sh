@@ -332,8 +332,8 @@ case "$warp" in
 esac
 elif [ "$v4_ok" = true ]; then
 sbyx='ipv4_only'
-xryx='ForceIPv4'
-wxryx='ForceIPv4'
+xryx='ForceIPv6v4'
+wxryx='ForceIPv6v4'
 elif [ "$v6_ok" = true ]; then
 sbyx='ipv6_only'
 xryx='ForceIPv6'
