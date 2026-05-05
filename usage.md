@@ -303,3 +303,323 @@ agsbx res
 - `res`：仅重启进程，不重建配置
 
 如果你手改过配置，只想重启，请用 `res`，不要用 `rep`。
+
+## 7. 路由排查复盘清单（推荐收藏）
+
+本节用于快速复盘「某端口到底走了 WARP、落地机，还是中转机直连」。
+
+### 7.1 一键采集关键信息
+
+```bash
+{
+  echo '===== ip rule ====='
+  ip rule
+  echo
+  echo '===== ip -4 route ====='
+  ip -4 route
+  echo
+  echo '===== ip -6 route ====='
+  ip -6 route
+  echo
+  echo '===== wg show ====='
+  wg show
+  echo
+  echo '===== xr.json key lines ====='
+  grep -n '"outboundTag"\|"outbound"\|"tag": "warp-out"\|"tag": "x-warp-out"\|"to-exit-node"\|"domainStrategy"' ~/agsbx/xr.json 2>/dev/null
+  echo
+  echo '===== vmws nodes ====='
+  cat ~/agsbx/vmws_nodes 2>/dev/null
+  echo
+  echo '===== vmws node files ====='
+  ls -l ~/agsbx/vmws_nodes.d/ 2>/dev/null
+  echo
+  echo '===== argo vmws map ====='
+  cat ~/agsbx/argo_vmws_map.log 2>/dev/null
+} > log.txt
+```
+
+### 7.2 结果如何解读（最实用）
+
+1. `ip rule`  
+只看到 `local/main/default`：说明没有额外策略路由劫持（系统层较干净）。
+
+2. `ip -4 route` / `ip -6 route`  
+- `default via ... dev eth0`：本机 IPv4 默认走网卡直连。  
+- 有 `wg0` 地址：机器存在 WARP/WireGuard 隧道能力。
+
+3. `~/agsbx/xr.json`  
+- 出现 `to-exit-node-xxxxx`：该端口有落地机出站。  
+- 出现 `outboundTag: "warp-out"`：该规则命中后走 WARP。  
+- 规则顺序即优先级：前面命中就不会再走后面的规则。  
+- 尾部通常是全局默认规则（未命中前置规则时的去向）。
+
+4. `~/agsbx/vmws_nodes.d/*.conf`  
+可反查每个端口是否有 `exvl/exvm/exhy2`（落地机）和 `xwd/xws`（前置 WARP 例外）。
+
+5. `~/agsbx/argo_vmws_map.log`  
+可确认「端口 -> Argo 域名」的一一映射关系，排除“连错端口/域名”。
+
+### 7.3 端口级路由定位模板
+
+定位某个端口（例如 `45681`）时，按下面顺序判断：
+
+1. 先查是否有该端口专属 `xwd_45681/xws_45681`（命中则先走 `warp-out`）。  
+2. 再查是否有该端口专属落地机 `exvl_45681/exvm_45681/exhy2_45681`。  
+3. 若无专属落地，再看全局落地机 `exvl/exvm/exhy2`。  
+4. 最后看尾部默认规则（通常是 `warp-out` 或 `direct`）。
+
+### 7.4 验证「本机出口」与「节点出口」
+
+本机出口（不代表节点出口）：
+
+```bash
+curl -4 --max-time 8 https://api-ipv4.ip.sb/ip
+curl -6 --max-time 8 https://api-ipv6.ip.sb/ip
+```
+
+节点出口（推荐在客户端连接对应节点后访问）：
+- `https://ip.sb`
+- `https://ping0.cc`
+
+说明：本机 `curl` 测的是系统路由；客户端连节点后访问网站，测的是节点链路路由。
+
+### 7.5 `wg0` 与 Xray WARP 的关系
+
+脚本里不会直接执行 `ip link add wg0` 或 `wg-quick up wg0`，但 Xray 的 `wireguard` outbound 会在 Linux 上创建系统可见的 `wg0`，并可能写入策略路由。
+
+关键配置在 `~/agsbx/xr.json`：
+
+```json
+{
+  "tag": "x-warp-out",
+  "protocol": "wireguard",
+  "settings": {
+    "address": [
+      "172.16.0.2/32",
+      "2606:4700:110:.../128"
+    ]
+  }
+}
+```
+
+常见现场现象：
+
+```bash
+ifconfig wg0
+ip -6 rule show
+ip -6 route show table all
+```
+
+如果看到类似：
+
+```text
+from 2606:4700:110:... lookup 10230
+default dev wg0 table 10230
+```
+
+含义是：源地址为 WARP IPv6 的流量会查 `10230` 表，然后从 `wg0` 出口走 WARP。
+
+### 7.6 为什么普通 SOCKS 的 IPv6 也可能走 WARP
+
+如果本机有一个普通直连 SOCKS，例如：
+
+```bash
+gost -L socks5://user:pass@0.0.0.0:2080
+```
+
+它本身并不懂 WARP；但如果 Xray 已经创建了 `wg0` 与 IPv6 策略路由，本机进程访问 IPv6 目标时可能会选中 `wg0` 的 WARP IPv6 源地址，从而命中：
+
+```text
+from 2606:4700:110:... lookup 10230
+default dev wg0 table 10230
+```
+
+这时 `2080` 会表现成：
+
+```text
+IPv4 -> eth0 -> VPS 原生 IPv4
+IPv6 -> wg0 -> WARP/Cloudflare IPv6
+```
+
+验证方式：
+
+```bash
+curl -x socks5h://user:pass@127.0.0.1:2080 https://api.ipify.org
+curl -x socks5h://user:pass@127.0.0.1:2080 https://api6.ipify.org
+ip -4 rule show
+ip -4 route show table all | grep 10230
+ip -6 rule show
+ip -6 route show table all
+```
+
+如果 IPv4 没有 `table 10230`，但 IPv6 有 `table 10230`，就会出现“IPv4 是 VPS，IPv6 是 WARP”的双出口结果。
+
+### 7.7 `1080` 上游 SOCKS 与 `2080` 直连 SOCKS 的区别
+
+直连 SOCKS：
+
+```bash
+gost -L socks5://user:pass@0.0.0.0:2080
+```
+
+由本机系统路由决定出口，所以会受 `wg0/table 10230` 影响。
+
+带上游 SOCKS：
+
+```bash
+gost -L socks5://user:pass@0.0.0.0:1080 -F socks5://上游IP:1080
+```
+
+本机只负责连接上游 SOCKS。最终访问目标网站的是上游 SOCKS 所在机器，因此：
+
+- 本机到上游 IP 是 IPv4 时，通常走本机 `eth0`。
+- 目标网站的 IPv4/IPv6 出口由上游 SOCKS 决定。
+- 本机的 `wg0/table 10230` 通常不会决定目标网站的最终出口。
+
+验证方式：
+
+```bash
+curl -x socks5h://user:pass@127.0.0.1:1080 https://api.ipify.org
+curl -x socks5h://user:pass@127.0.0.1:1080 https://api6.ipify.org
+```
+
+### 7.8 Worker 使用 SOCKS 时的路由判断
+
+如果 Cloudflare Worker 节点配置了 SOCKS 反代，例如 `socks5=user:pass@VPS:2080`，链路通常是：
+
+```text
+客户端 -> Cloudflare Worker -> VPS:2080 -> gost -> 目标网站
+```
+
+如果 `2080` 是直连 SOCKS，那么最终出口仍由 VPS 系统路由决定。结合上面的 `wg0/table 10230`，可能显示：
+
+```text
+IPv4 = VPS 原生 IPv4
+IPv6 = WARP/Cloudflare IPv6
+```
+
+若 Worker 是“非全局 SOCKS”模式，还要看 Worker 的直连白名单/优先规则。命中直连规则时，Worker 可能先自己直连目标；未命中时走 SOCKS。
+
+### 7.9 清理旧 WARP 路由残留
+
+修理版脚本已加入 `cleanup_warp_kernel_state`，会在重建/重启 Xray 前清理常见残留：
+
+```text
+ip -6 rule ... lookup 10230
+ip -6 route table 10230
+ip route table 10230
+匹配 172.16.0.2/32 或 2606:4700:110: 的 wg0
+```
+
+它的目的不是禁止 Xray 创建 `wg0`，而是避免重复重启后旧规则堆积。新 Xray 启动后，如果仍启用 `x-warp-out`，会重新创建干净的 `wg0/table 10230`。
+
+如果想禁止 Xray 创建系统可见的 `wg0`，需要在 `x-warp-out` 的 WireGuard settings 中使用用户态模式，例如研究添加：
+
+```json
+"noKernelTun": true
+```
+
+注意：这会改变 WARP outbound 的运行方式，建议先单独测试。
+
+### 7.10 `warp=sx` 与 `domainStrategy`
+
+当前修理版中，双栈可用时：
+
+```text
+warp=sx / warp=xs / warp 为空
+```
+
+会让 Xray 的 `direct` 与 `warp-out` 出站生成：
+
+```json
+"domainStrategy": "ForceIPv6v4"
+```
+
+`domainStrategy` 只影响 Xray 自己对域名的解析/连接倾向；它不是 `gost 2080` 走 WARP 的根因。`gost 2080` 的 IPv6 走 WARP，根因是系统里存在 `wg0 + ip -6 rule + table 10230`。
+
+### 7.11 现场复查命令合集
+
+确认 `wg0` 与 WARP 地址：
+
+```bash
+ifconfig wg0
+ip addr show dev wg0
+```
+
+确认 IPv4 是否被 WARP 接管：
+
+```bash
+ip -4 rule show
+ip -4 route show table all | grep 10230
+ip -4 route get 1.1.1.1
+ip -4 route get 1.1.1.1 from 172.16.0.2
+```
+
+确认 IPv6 是否通过 `table 10230` 走 `wg0`：
+
+```bash
+ip -6 rule show
+ip -6 route show table all
+ip -6 route show table 10230
+dig +short AAAA api6.ipify.org
+ip -6 route get $(dig +short AAAA api6.ipify.org | head -n1)
+ip -6 route get $(dig +short AAAA api6.ipify.org | head -n1) from $(ip -6 addr show dev wg0 scope global | awk '/inet6/ { sub("/.*", "", $2); print $2; exit }')
+```
+
+检查是否有 nft/iptables 接管：
+
+```bash
+nft list ruleset | grep -Ei 'wg0|mark|fwmark|2080|gost|meta|skuid'
+ip6tables -t mangle -S
+ip6tables -t nat -S
+iptables -t mangle -S
+iptables -t nat -S
+```
+
+确认 `gost` 监听与进程参数：
+
+```bash
+ps -ef | grep '[g]ost'
+ss -lntp | grep ':2080'
+ss -lntp | grep ':1080'
+ss -6ntp | grep gost
+```
+
+直接测试 `2080` 直连 SOCKS 出口：
+
+```bash
+curl -x socks5h://user:pass@127.0.0.1:2080 https://api.ipify.org
+curl -x socks5h://user:pass@127.0.0.1:2080 https://api6.ipify.org
+```
+
+直接测试 `1080` 上游 SOCKS 出口：
+
+```bash
+curl -x socks5h://user:pass@127.0.0.1:1080 https://api.ipify.org
+curl -x socks5h://user:pass@127.0.0.1:1080 https://api6.ipify.org
+```
+
+查看 Xray 关键路由与 WARP 出站：
+
+```bash
+grep -n '"outboundTag"\|"outbound"\|"tag": "warp-out"\|"tag": "x-warp-out"\|"to-exit-node"\|"domainStrategy"' ~/agsbx/xr.json
+grep -n '"protocol": "wireguard"\|"address": \[\|"allowedIPs"\|"endpoint"\|"reserved"' ~/agsbx/xr.json
+```
+
+重启/重建后确认旧规则是否被清掉：
+
+```bash
+agsbx res
+ip -6 rule show
+ip -6 route show table 10230
+```
+
+预期是旧的重复 `lookup 10230` 规则减少；如果仍启用 `x-warp-out`，新的 `wg0/table 10230` 还会重新出现。
+
+### 7.12 日志脱敏后再分享
+
+生成脱敏副本（保留原文件）：
+
+```bash
+perl -0777 -pe 's/\b(?:\d{1,3}\.){3}\d{1,3}\b//g; s/\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]*\b//g; s/("id"\s*:\s*)"[^"]*"/$1""/g; s/("secretKey"\s*:\s*)"[^"]*"/$1""/g; s/("publicKey"\s*:\s*)"[^"]*"/$1""/g; s/("endpoint"\s*:\s*)"[^"]*"/$1""/g; s/("address"\s*:\s*)"[^"]*"/$1""/g; s/("Host"\s*:\s*)"[^"]*"/$1""/g; s/("path"\s*:\s*)"[^"]*"/$1""/g; s/(\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b)//g; s/\b(exvl_b64|exvm_b64|exhy2_b64|xwd_b64|xws_b64)=[^\r\n]*/$1=/g;' log.txt > log.sanitized.txt
+```
