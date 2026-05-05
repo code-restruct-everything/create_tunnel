@@ -303,6 +303,7 @@ agsbx res
 - `res`：仅重启进程，不重建配置
 
 如果你手改过配置，只想重启，请用 `res`，不要用 `rep`。
+补充：手改 `~/agsbx/xr.json`（例如 `domainStrategy`）后，执行 `agsbx res` 会按新配置加载；后续再执行 `agsbx rep` 会重新生成并覆盖手改内容。
 
 ## 7. 路由排查复盘清单（推荐收藏）
 
@@ -537,6 +538,26 @@ warp=sx / warp=xs / warp 为空
 
 `domainStrategy` 只影响 Xray 自己对域名的解析/连接倾向；它不是 `gost 2080` 走 WARP 的根因。`gost 2080` 的 IPv6 走 WARP，根因是系统里存在 `wg0 + ip -6 rule + table 10230`。
 
+常见疑问：为什么我明明设置了 `warp=sx`，结果还是 `ForceIPv4`？
+
+- 脚本会在生成配置时先探测 IPv4/IPv6 连通性（`curl -4/-6` 或 `wget -4/-6`）。
+- 若当时只探测到 IPv4 可用，脚本会回退把 Xray `domainStrategy` 写成 `ForceIPv4`。
+- 因此，同一台机在不同时间 `rep`，可能出现不同策略结果。
+
+现场修复（只改当前生效配置）：
+
+```bash
+sed -i 's/"domainStrategy":"ForceIPv4"/"domainStrategy":"ForceIPv6v4"/g' ~/agsbx/xr.json
+agsbx res
+grep -n '"domainStrategy"' ~/agsbx/xr.json
+```
+
+持久修复（避免后续 `rep` 又改回）：
+
+- 修改 `argosbx.sh` 中 `elif [ "$v4_ok" = true ]; then` 分支，把
+`xryx='ForceIPv4'` / `wxryx='ForceIPv4'` 改为 `ForceIPv6v4`。
+- 修改后重新执行一次 `bash argosbx.sh rep`。
+
 ### 7.11 现场复查命令合集
 
 确认 `wg0` 与 WARP 地址：
@@ -623,3 +644,27 @@ ip -6 route show table 10230
 ```bash
 perl -0777 -pe 's/\b(?:\d{1,3}\.){3}\d{1,3}\b//g; s/\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]*\b//g; s/("id"\s*:\s*)"[^"]*"/$1""/g; s/("secretKey"\s*:\s*)"[^"]*"/$1""/g; s/("publicKey"\s*:\s*)"[^"]*"/$1""/g; s/("endpoint"\s*:\s*)"[^"]*"/$1""/g; s/("address"\s*:\s*)"[^"]*"/$1""/g; s/("Host"\s*:\s*)"[^"]*"/$1""/g; s/("path"\s*:\s*)"[^"]*"/$1""/g; s/(\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b)//g; s/\b(exvl_b64|exvm_b64|exhy2_b64|xwd_b64|xws_b64)=[^\r\n]*/$1=/g;' log.txt > log.sanitized.txt
 ```
+
+### 7.13 多端口案例复盘（45678-45682）
+
+以下复盘结论基于这类多端口规则顺序：先匹配端口前置规则，再匹配端口主规则，最后命中全局兜底规则。
+
+- `45678 / 45679 / 45680`：
+先匹配该端口 `xwd/xws`（命中走 `warp-out`），其余流量走对应 `to-exit-node-<port>` 落地机出站。
+- `45681`：
+没有专属 `to-exit-node-45681`，也没有端口前置规则时，最终走全局兜底，表现为全流量 `warp-out`。
+- `45682`：
+如果只有 `xws` 前置规则、没有专属落地机出站，命中 `xws` 走 `warp-out`，其余也会落到全局兜底 `warp-out`，实质也是全流量 WARP。
+
+排查时两个高频信号：
+
+- `routing.rules` 出现 `"domain": ["domain:"]`：
+通常是 `xwd` 被留空或脱敏过度导致的无效匹配项，建议删掉或填真实域名后缀。
+- `~/agsbx/argo_vmws_map.log` 出现 `45681|` 这种空域名映射：
+表示该端口缺少可用 Argo 域名入口，外部通常无法按域名访问该端口。
+
+### 7.14 文档脱敏边界（避免误公开）
+
+- `usage.md` 建议只保留占位符示例（`你的UUID/你的token` 等）。
+- `usage.sh` 常包含真实参数（token、UUID、IP、域名、密码、节点 URI），公开前必须单独清理。
+- 需要对外共享排障信息时，优先共享 `usage.md` 和经过第 7.12 脱敏后的日志。
