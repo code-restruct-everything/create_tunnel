@@ -325,6 +325,7 @@ case "$warp" in
 *) sbyx='prefer_ipv4' ;;
 esac
 case "$warp" in
+""|sx|xs) xryx='ForceIPv6v4'; wxryx='ForceIPv6v4' ;;
 *x6*) xryx='ForceIPv6v4'; wxryx='ForceIPv6' ;;
 *x4*) xryx='ForceIPv4v6'; wxryx='ForceIPv4' ;;
 *) xryx='ForceIPv4v6'; wxryx='ForceIPv4v6' ;;
@@ -2180,6 +2181,7 @@ ${xr_extra_rules}
 }
 EOF
 ensure_xray_geo_data
+cleanup_warp_kernel_state
 if pidof systemd >/dev/null 2>&1 && [ "$EUID" -eq 0 ]; then
 cat > /etc/systemd/system/xr.service <<EOF
 [Unit]
@@ -2888,15 +2890,33 @@ rc-update del "$svc" default >/dev/null 2>&1
 done
 rm -rf /etc/init.d/{sing-box,xray,argo}
 fi
+cleanup_warp_kernel_state
+}
+cleanup_warp_kernel_state(){
+command -v ip >/dev/null 2>&1 || return 0
+ip -6 rule show 2>/dev/null | awk '/lookup[[:space:]]+10230/ { gsub(":", "", $1); print $1 }' | while read -r pref; do
+case "$pref" in ''|*[!0-9]*) continue ;; esac
+ip -6 rule del pref "$pref" >/dev/null 2>&1
+done
+ip -6 route flush table 10230 >/dev/null 2>&1
+ip route flush table 10230 >/dev/null 2>&1
+if ip link show wg0 >/dev/null 2>&1 && ip addr show dev wg0 2>/dev/null | grep -Eq '172\.16\.0\.2/32|2606:4700:110:'; then
+ip link del wg0 >/dev/null 2>&1
+fi
 }
 xrestart(){
 kill -15 $(pgrep -f 'agsbx/x' 2>/dev/null) >/dev/null 2>&1
 ensure_xray_geo_data
 if pidof systemd >/dev/null 2>&1; then
-systemctl restart xr >/dev/null 2>&1
+systemctl stop xr >/dev/null 2>&1
+cleanup_warp_kernel_state
+systemctl start xr >/dev/null 2>&1
 elif command -v rc-service >/dev/null 2>&1; then
-rc-service xray restart >/dev/null 2>&1
+rc-service xray stop >/dev/null 2>&1
+cleanup_warp_kernel_state
+rc-service xray start >/dev/null 2>&1
 else
+cleanup_warp_kernel_state
 nohup $HOME/agsbx/xray run -c $HOME/agsbx/xr.json >/dev/null 2>&1 &
 fi
 }
